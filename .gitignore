@@ -1,0 +1,30 @@
+# Local Python environment
+.venv/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build and distribution artifacts
+build/
+dist/
+*.egg-info/
+
+# Local setup state
+.setup-complete
+
+# Generated scan projects and runtime output
+output/
+scan_*/
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
