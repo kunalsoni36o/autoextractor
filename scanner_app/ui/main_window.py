@@ -24,7 +24,7 @@ class MainWindow(QMainWindow):
         self.capabilities = self.colmap.discover()
         self.project: Path | None = None
         self.process: QProcess | None = None
-        self.turntable = Turntable("COM9")
+        self.turntable = Turntable()
         self.rotation_in_progress = False
         self.started_at = 0.0
         self._build_ui()

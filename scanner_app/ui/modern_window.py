@@ -13,9 +13,16 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+try:
+    import pyvista as pv
+    from pyvistaqt import QtInteractor
+except ImportError:
+    pv = None
+    QtInteractor = None
+
 from ..core.colmap import ColmapAdapter
 from ..core.diagnostics import system_snapshot
-from ..core.project import SUPPORTED, create_project
+from ..core.project import find_images, create_project
 from ..core.reconstruction import PipelineConfig, ReconstructionWorker
 from ..core.profiles import SAFE_SCAN
 from ..core.turntable import Turntable
@@ -121,7 +128,7 @@ class MainWindow(QMainWindow):
         self.process: QProcess | None = None  # kept for compatibility with older UI integrations
         self.worker: ReconstructionWorker | None = None
         self.started_at = 0.0
-        self.turntable = Turntable("COM9")
+        self.turntable = Turntable()
         self.rotation_in_progress = False
         self.sidebar_buttons: list[SidebarButton] = []
         self._build_ui()
@@ -147,7 +154,7 @@ class MainWindow(QMainWindow):
         side.setSpacing(8)
         side.addWidget(QLabel("◈  SCANNER\n    WORKSTATION", objectName="brand"))
         side.addSpacing(22)
-        for icon, label, page in [("⌂", "Overview", 0), ("＋", "New Scan", 1), ("◌", "Reconstruction", 2), ("▣", "Hardware & GPU", 3), ("⚙", "Settings", 4)]:
+        for icon, label, page in [("⌂", "Overview", 0), ("＋", "New Scan", 1), ("◌", "Reconstruction", 2), ("▣", "Hardware & GPU", 3), ("◇", "3D Viewer", 4), ("⚙", "Settings", 5)]:
             button = SidebarButton(icon, label)
             button.clicked.connect(lambda _checked=False, p=page: self._navigate(p))
             self.sidebar_buttons.append(button)
@@ -188,6 +195,7 @@ class MainWindow(QMainWindow):
         self._build_new_scan()
         self._build_reconstruction()
         self._build_hardware()
+        self._build_viewer()
         self._build_settings()
         shell.addWidget(content, 1)
         self._navigate(0)
@@ -428,6 +436,64 @@ class MainWindow(QMainWindow):
         layout.addWidget(tests)
         layout.addStretch()
 
+    def _build_viewer(self) -> None:
+        layout = self._page()
+        layout.addWidget(QLabel("3D Viewer", objectName="sectionTitle"))
+        layout.addWidget(self._hint("Open PLY, STL, OBJ, OFF, VTK, or VTP models. Drag to orbit and scroll to zoom."))
+        controls = QHBoxLayout()
+        open_button = QPushButton("Open 3D model")
+        open_button.clicked.connect(self.open_model)
+        controls.addWidget(open_button)
+        self.viewer_file = QLabel("No model selected", objectName="pathValue")
+        controls.addWidget(self.viewer_file, 1)
+        reset_button = QPushButton("Reset view")
+        reset_button.clicked.connect(self.reset_model_view)
+        controls.addWidget(reset_button)
+        layout.addLayout(controls)
+        viewer_card = Card()
+        viewer_layout = QVBoxLayout(viewer_card)
+        viewer_layout.setContentsMargins(8, 8, 8, 8)
+        if QtInteractor is None:
+            self.viewer = None
+            viewer_layout.addWidget(self._hint("3D viewer dependencies are not installed. Run setup.bat, then reopen the app."))
+        else:
+            self.viewer = QtInteractor(viewer_card)
+            self.viewer.set_background("#101C17")
+            viewer_layout.addWidget(self.viewer.interactor)
+        self.viewer_info = QLabel("No model loaded.", objectName="muted")
+        viewer_layout.addWidget(self.viewer_info)
+        layout.addWidget(viewer_card, 1)
+
+    def open_model(self) -> None:
+        if self.viewer is None:
+            QMessageBox.warning(self, "3D viewer unavailable", "Run setup.bat to install the 3D viewer dependencies.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Open 3D model", str(Path.cwd()), "3D models (*.ply *.stl *.obj *.off *.vtk *.vtp);;All files (*.*)")
+        if not path:
+            return
+        try:
+            mesh = pv.read(path)
+            self.viewer.clear()
+            # Preserve embedded PLY vertex/cell colours when present. Formats
+            # such as STL commonly have no colour data, so use a neutral
+            # fallback only for genuinely uncoloured meshes.
+            rgb_name = next((name for name in mesh.array_names if name.lower() in {"rgb", "rgba", "color", "colors"}), None)
+            if rgb_name:
+                self.viewer.add_mesh(mesh, scalars=rgb_name, rgb=True, smooth_shading=True, show_edges=False)
+            else:
+                self.viewer.add_mesh(mesh, color="#D7D7D7", smooth_shading=True, show_edges=False)
+            self.viewer.reset_camera()
+            self.viewer_file.setText(path)
+            self.viewer_info.setText(f"Loaded: {mesh.n_points:,} vertices, {mesh.n_cells:,} faces")
+            self.viewer.render()
+        except Exception as exc:
+            QMessageBox.critical(self, "Model load failed", str(exc))
+
+    def reset_model_view(self) -> None:
+        if self.viewer is not None:
+            self.viewer.reset_camera()
+            self.viewer.render()
+
     def _build_settings(self) -> None:
         layout = self._page()
         layout.addWidget(QLabel("Settings", objectName="sectionTitle"))
@@ -465,7 +531,7 @@ class MainWindow(QMainWindow):
 
     def _navigate(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
-        self.page_title.setText(["Overview", "New scan", "Reconstruction", "Hardware & GPU", "Settings"][index])
+        self.page_title.setText(["Overview", "New scan", "Reconstruction", "Hardware & GPU", "3D Viewer", "Settings"][index])
         for i, button in enumerate(self.sidebar_buttons):
             button.setChecked(i == index)
 
@@ -499,7 +565,7 @@ class MainWindow(QMainWindow):
         self.hardware_driver.set_value("CUDA build detected" if self.capabilities.has_cuda_build else "Unavailable")
         self.hardware_camera.set_value("Will be added later")
         turntable_connected = self.turntable.probe()
-        self.hardware_turntable.set_value("Connected on COM9" if turntable_connected else "Not connected")
+        self.hardware_turntable.set_value(f"Connected on {self.turntable.port}" if turntable_connected else "Not connected")
         self.rotate_test_button.setEnabled(turntable_connected and not self.rotation_in_progress)
         if not self.project:
             self.project_stat.set_value("None selected")
@@ -518,7 +584,7 @@ class MainWindow(QMainWindow):
 
     def _poll_turntable(self) -> None:
         connected = self.turntable.probe()
-        self.hardware_turntable.set_value("Connected on COM9" if connected else "Not connected")
+        self.hardware_turntable.set_value(f"Connected on {self.turntable.port}" if connected else "Not connected")
         self.rotate_test_button.setEnabled(connected and not self.rotation_in_progress)
         for line in self.turntable.read_lines():
             if line.upper() == "OK" and self.rotation_in_progress:
@@ -535,7 +601,7 @@ class MainWindow(QMainWindow):
         if not source:
             return
         path = Path(source)
-        files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED]
+        files = find_images(path)
         self.selected_source = path
         self.source_path.setText(str(path))
         self.image_summary.setText(f"{len(files)} supported image(s) found")
@@ -572,7 +638,7 @@ class MainWindow(QMainWindow):
         self.image_stat.set_value(self._project_image_count() if self.project else "None selected")
 
     def _project_image_count(self) -> str:
-        return str(len(list((self.project / "source" / "original_images").glob("*")))) if self.project else "Unavailable"
+        return str(len(find_images(self.project / "source" / "original_images"))) if self.project else "Unavailable"
 
     def _reset_stage_list(self) -> None:
         self.stage_list.clear()

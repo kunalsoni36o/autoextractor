@@ -14,6 +14,14 @@ class ProjectTests(unittest.TestCase):
             self.assertTrue((project / "source" / "original_images" / "a.JPG").exists())
             self.assertEqual(__import__("json").loads((project / "project.json").read_text())["image_count"], 1)
 
+    def test_import_finds_images_in_subfolders(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); source = root / "source"; nested = source / "camera_01"; nested.mkdir(parents=True)
+            (nested / "frame.png").write_bytes(b"x")
+            project, count = create_project(root / "output", source)
+            self.assertEqual(count, 1)
+            self.assertTrue((project / "source" / "original_images" / "camera_01" / "frame.png").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

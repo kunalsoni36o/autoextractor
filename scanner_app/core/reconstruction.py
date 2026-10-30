@@ -170,7 +170,7 @@ def _cached_inputs_match(config: PipelineConfig) -> bool:
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
         manifest_names = sorted(data.get("images", []))
-        current_names = sorted(path.name for path in config.images.iterdir() if path.is_file())
+        current_names = sorted(str(path.relative_to(config.images)) for path in config.images.rglob("*") if path.is_file())
         return bool(manifest_names) and manifest_names == current_names
     except (OSError, json.JSONDecodeError):
         return False

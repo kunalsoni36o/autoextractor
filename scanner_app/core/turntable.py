@@ -8,7 +8,7 @@ from serial.tools import list_ports
 
 @dataclass
 class Turntable:
-    port: str = "COM9"
+    port: str | None = None
     baudrate: int = 115200
 
     def __post_init__(self) -> None:
@@ -19,18 +19,29 @@ class Turntable:
         return self._serial is not None and self._serial.is_open
 
     def probe(self) -> bool:
-        """Open COM9 when it exists. Reads are non-blocking."""
+        """Open the configured port, or discover a likely USB serial port."""
         if self.connected:
             return True
-        if not any(info.device.upper() == self.port.upper() for info in list_ports.comports()):
+        ports = list(list_ports.comports())
+        if self.port:
+            ports = [info for info in ports if info.device.upper() == self.port.upper()]
+        else:
+            preferred = ("ESP32", "USB-SERIAL", "USB SERIAL", "CP210", "CH340", "UART")
+            matching = [info for info in ports if any(term in f"{info.description} {info.hwid}".upper() for term in preferred)]
+            ports = matching or ports
+        if not ports:
             return False
-        try:
-            self._serial = serial.Serial(self.port, self.baudrate, timeout=0, write_timeout=1)
-            self._serial.reset_input_buffer()
-            return True
-        except (serial.SerialException, OSError):
-            self._serial = None
-            return False
+        for info in ports:
+            try:
+                candidate = serial.Serial(info.device, self.baudrate, timeout=0, write_timeout=1)
+                candidate.reset_input_buffer()
+                self.port = info.device
+                self._serial = candidate
+                return True
+            except (serial.SerialException, OSError):
+                continue
+        self._serial = None
+        return False
 
     def disconnect(self) -> None:
         if self._serial:
@@ -41,8 +52,12 @@ class Turntable:
         if not self.connected:
             raise RuntimeError(f"Turntable is not connected on {self.port}")
         self._serial.reset_input_buffer()
-        self._serial.write(b"ROTATE\n")
-        self._serial.flush()
+        try:
+            self._serial.write(b"ROTATE\n")
+            self._serial.flush()
+        except (serial.SerialException, OSError) as exc:
+            self.disconnect()
+            raise RuntimeError(f"Serial write failed on {self.port}. Reconnect the ESP32 and retry: {exc}") from exc
 
     def read_lines(self) -> list[str]:
         if not self.connected:
